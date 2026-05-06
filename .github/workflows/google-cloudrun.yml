@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: virtual-ellipse-495506-p4
   REGION: us-central1
   SERVICE: logicbite
 

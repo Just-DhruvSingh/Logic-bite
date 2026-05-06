@@ -1,505 +1,326 @@
 "use client";
 
-/**
- * components/ScrollySequence.tsx
- *
- * Core scroll-linked canvas animation for LogicBite.
- * • 80-frame JPG sequence driven by scroll position
- * • Framer Motion spring smoothing (stiffness:100, damping:30)
- * • 4 story beats with animated text overlays
- * • Holographic data panels + scan-beam overlay
- * • Accessible: aria-live region, role="img", role="progressbar"
- */
+import { motion, useMotionValueEvent, useScroll, useSpring } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import React, {
-  useRef,
-  useEffect,
-  useState,
-  useCallback,
-} from "react";
-import {
-  useScroll,
-  useSpring,
-  useTransform,
-  motion,
-  AnimatePresence,
-} from "framer-motion";
+const TOTAL_FRAMES = 120;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const TOTAL_FRAMES = 80;
-
-const getFramePath = (index: number): string =>
-  `/sequence/ezgif-frame-${String(index).padStart(3, "0")}.jpg`;
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Beat {
-  id: string;
-  range: [number, number];
-  announcement: string;
-  align: "center" | "left" | "right";
-  eyebrow: string;
-  title: React.ReactNode;
-  subtitle: string;
-  hasCta?: boolean;
-}
-
-interface DataPoint {
-  label: string;
-  value: string;
-  unit: string;
-  color: string;
-}
-
-// ─── Story Beats ──────────────────────────────────────────────────────────────
-
-const BEATS: Beat[] = [
+const STORY_BEATS = [
   {
     id: "beat-a",
-    range: [0, 0.22],
-    announcement: "Decode Your Diet. LogicBite uses AI to transform visual context into actionable health intelligence.",
-    align: "center",
-    eyebrow: "Introducing LogicBite",
-    title: (<>DECODE YOUR <span className="holo-text">DIET.</span></>),
-    subtitle: "LogicBite uses AI to transform a single photo into complete nutritional intelligence.",
+    label: "Beat A: Decode Your Diet",
+    title: "Decode Your Diet",
+    body: "The robotic scanner arm isolates the signals hidden in every plate, translating food imagery into usable health context.",
+    start: 0,
+    end: 0.24,
+    align: "left" as const,
   },
   {
     id: "beat-b",
-    range: [0.28, 0.47],
-    announcement: "Beyond Calorie Counting. The Gemini Vision engine instantly extracts multi-spectral nutritional data.",
-    align: "left",
-    eyebrow: "Gemini Vision API",
-    title: (<>BEYOND <span className="holo-text">CALORIE</span><br />COUNTING.</>),
-    subtitle: "Upload a picture. The Gemini Vision engine instantly extracts multi-spectral nutritional data from your environment.",
+    label: "Beat B: Beyond Calorie Counting",
+    title: "Beyond Calorie Counting",
+    body: "LogicBite frames texture, composition, and probable ingredients as richer evidence than a single calorie number.",
+    start: 0.25,
+    end: 0.49,
+    align: "right" as const,
   },
   {
     id: "beat-c",
-    range: [0.53, 0.72],
-    announcement: "Micro-Swaps, Macro Results. Personalized alternatives based on your behavior profile.",
-    align: "right",
-    eyebrow: "Behaviour AI",
-    title: (<>MICRO-SWAPS,<br /><span className="holo-text">MACRO</span> RESULTS.</>),
-    subtitle: "Cross-referenced with your historical behavior profile to surface painless, personalized alternatives.",
+    label: "Beat C: Micro-Swaps",
+    title: "Micro-Swaps",
+    body: "Personalized alternatives appear at the exact moment a choice can change, without asking people to rebuild their routine.",
+    start: 0.5,
+    end: 0.74,
+    align: "left" as const,
   },
   {
     id: "beat-d",
-    range: [0.78, 0.97],
-    announcement: "Initiate Gastro-Scan. Join the LogicBite beta and build sustainable habits.",
-    align: "center",
-    eyebrow: "Limited Beta",
-    title: (<>INITIATE <span className="holo-text">GASTRO&#8209;SCAN.</span></>),
-    subtitle: "Join 2,400+ beta users already building sustainable habits — one scan at a time.",
-    hasCta: true,
+    label: "Beat D: Initiate Gastro-Scan",
+    title: "Initiate Gastro-Scan",
+    body: "The landing sequence resolves into a clear call to action: scan faster, decide smarter, and build better habits over time.",
+    start: 0.75,
+    end: 1,
+    align: "center" as const,
   },
 ];
 
-const DATA_POINTS: DataPoint[] = [
-  { label: "Protein", value: "22", unit: "g", color: "#00e5ff" },
-  { label: "Carbs",   value: "61", unit: "g", color: "#7c3aed" },
-  { label: "Fat",     value: "14", unit: "g", color: "#f59e0b" },
-  { label: "Fiber",   value: "9",  unit: "g", color: "#10b981" },
-  { label: "kcal",   value: "487", unit: "",  color: "#00e5ff" },
-  { label: "GI",      value: "54", unit: "",  color: "#f59e0b" },
-];
+function getFramePath(index: number): string {
+  return `/sequence/frame_${String(index).padStart(3, "0")}.webp`;
+}
 
-// ─── Loading Screen ───────────────────────────────────────────────────────────
+function getFallbackFramePath(index: number): string {
+  const jpgIndex = Math.min(index, 80);
+  return `/sequence/ezgif-frame-${String(jpgIndex).padStart(3, "0")}.jpg`;
+}
 
-function LoadingScreen({ progress }: { progress: number }) {
+function getBeatFromProgress(progress: number) {
+  return (
+    STORY_BEATS.find((beat) => progress >= beat.start && progress <= beat.end) ??
+    STORY_BEATS[STORY_BEATS.length - 1]
+  );
+}
+
+function drawCoverImage(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  const imageRatio = image.naturalWidth / image.naturalHeight;
+  const canvasRatio = canvasWidth / canvasHeight;
+
+  let drawWidth = canvasWidth;
+  let drawHeight = canvasHeight;
+  let drawX = 0;
+  let drawY = 0;
+
+  if (imageRatio > canvasRatio) {
+    drawHeight = canvasHeight;
+    drawWidth = canvasHeight * imageRatio;
+    drawX = (canvasWidth - drawWidth) / 2;
+  } else {
+    drawWidth = canvasWidth;
+    drawHeight = canvasWidth / imageRatio;
+    drawY = (canvasHeight - drawHeight) / 2;
+  }
+
+  context.clearRect(0, 0, canvasWidth, canvasHeight);
+  context.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+}
+
+function renderBeatOverlay({
+  title,
+  body,
+  align,
+}: {
+  title: string;
+  body: string;
+  align: "left" | "right" | "center";
+}) {
+  const alignmentClass =
+    align === "left"
+      ? "items-start text-left"
+      : align === "right"
+        ? "items-end text-right"
+        : "items-center text-center";
+
   return (
     <div
-      role="status"
-      aria-label={`Loading LogicBite: ${progress}%`}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black gap-8"
+      className={`pointer-events-none absolute inset-x-0 bottom-12 z-10 mx-auto flex max-w-6xl px-6 md:px-10 ${alignmentClass}`}
     >
-      <div className="flex flex-col items-center gap-3">
-        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true">
-          <rect x="2"  y="2"  width="14" height="14" stroke="#00e5ff" strokeWidth="1.4"/>
-          <rect x="20" y="2"  width="14" height="14" stroke="#00e5ff" strokeWidth="1.4"/>
-          <rect x="2"  y="20" width="14" height="14" stroke="#00e5ff" strokeWidth="1.4"/>
-          <rect x="20" y="20" width="14" height="14" stroke="#00e5ff" strokeWidth="1.4" opacity="0.3"/>
-          <circle cx="18" cy="18" r="3" fill="#00e5ff"/>
-        </svg>
-        <span className="text-[10px] tracking-[0.35em] text-cyan-400 font-semibold uppercase">
-          LogicBite
-        </span>
+      <div className="max-w-xl rounded-sm border border-white/12 bg-black/55 p-6 backdrop-blur-md">
+        <p className="text-[0.72rem] uppercase tracking-[0.4em] text-cyan-300/70">
+          LogicBite Narrative
+        </p>
+        <h2 className="mt-4 text-3xl font-black tracking-tight text-white md:text-5xl">
+          {title}
+        </h2>
+        <p className="mt-4 text-sm leading-7 text-white/75 md:text-base">{body}</p>
       </div>
-
-      <div className="flex flex-col items-center gap-2 w-52">
-        <div
-          className="w-full h-px bg-white/5 relative overflow-hidden"
-          role="progressbar"
-          aria-valuenow={progress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-cyan-400 transition-all duration-150 ease-linear"
-            style={{ width: `${progress}%` }}
-          />
-          <div className="absolute inset-0 progress-shimmer opacity-50" aria-hidden="true"/>
-        </div>
-        <span className="text-[10px] tracking-[0.3em] text-cyan-400/50 font-mono tabular-nums">
-          {String(progress).padStart(3, "0")}%
-        </span>
-      </div>
-
-      <p className="text-[10px] tracking-[0.3em] text-white/15 uppercase">
-        Initialising scanner array
-      </p>
     </div>
   );
 }
 
-// ─── Beat Text Overlay ────────────────────────────────────────────────────────
-
-interface BeatOverlayProps {
-  beat: Beat;
-  scrollProgress: number;
-}
-
-function BeatOverlay({ beat, scrollProgress }: BeatOverlayProps) {
-  const [start, end] = beat.range;
-  const fadeIn  = start + (end - start) * 0.15;
-  const fadeOut = end   - (end - start) * 0.15;
-
-  const opacity =
-    scrollProgress < start  ? 0 :
-    scrollProgress < fadeIn  ? (scrollProgress - start) / (fadeIn - start) :
-    scrollProgress < fadeOut ? 1 :
-    scrollProgress < end     ? 1 - (scrollProgress - fadeOut) / (end - fadeOut) :
-    0;
-
-  const y =
-    scrollProgress < start  ? 28 :
-    scrollProgress < fadeIn  ? 28 * (1 - (scrollProgress - start) / (fadeIn - start)) :
-    scrollProgress > fadeOut ? -28 * ((scrollProgress - fadeOut) / (end - fadeOut)) :
-    0;
-
-  const isVisible = scrollProgress >= start && scrollProgress <= end;
-
-  const alignClass =
-    beat.align === "center" ? "items-center text-center mx-auto" :
-    beat.align === "left"   ? "items-start text-left ml-8 md:ml-16 lg:ml-24" :
-                              "items-end text-right mr-8 md:mr-16 lg:mr-24";
-
-  return (
-    <motion.div
-      key={beat.id}
-      animate={{ opacity, y, pointerEvents: isVisible ? "auto" : "none" }}
-      transition={{ duration: 0 }}
-      className={`absolute flex flex-col gap-3 z-20 max-w-2xl ${alignClass}`}
-      style={{ bottom: "13%" }}
-      aria-hidden={!isVisible}
-    >
-      <span className="text-[9px] tracking-[0.4em] text-cyan-400/70 uppercase font-medium">
-        {beat.eyebrow}
-      </span>
-
-      <h2 className="text-3xl sm:text-4xl md:text-5xl lg:text-[3.5rem]
-                     font-black tracking-tight text-white leading-[1.02]">
-        {beat.title}
-      </h2>
-
-      <p className="text-sm sm:text-base text-cyan-50/55 max-w-sm leading-relaxed font-light">
-        {beat.subtitle}
-      </p>
-
-      {beat.hasCta && (
-        <div className="flex items-center gap-4 mt-3">
-          <button
-            type="button"
-            className="cta-btn"
-            aria-label="Join LogicBite beta — initiate your gastro-scan"
-            onClick={() => document.getElementById("beta-section")?.scrollIntoView({ behavior: "smooth" })}
-          >
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-              <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" strokeWidth="1.1"/>
-              <path d="M4.5 6.5h4M6.5 4.5l2 2-2 2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-            </svg>
-            JOIN BETA
-          </button>
-          <span className="text-[9px] text-white/20 tracking-widest">No credit card required</span>
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-// ─── Holographic Data Panels ──────────────────────────────────────────────────
-
-function HoloPanels({ opacity }: { opacity: number }) {
-  return (
-    <motion.aside
-      animate={{ opacity }}
-      transition={{ duration: 0.5 }}
-      aria-label="Live nutritional analysis data"
-      aria-hidden={opacity < 0.1}
-      className="absolute top-20 right-5 md:right-8 flex flex-col gap-1.5 z-10"
-    >
-      <div className="data-panel px-3 py-1.5 mb-0.5">
-        <span className="text-[8px] tracking-[0.3em] text-cyan-400/60 uppercase font-medium">
-          Gemini Vision · Live
-        </span>
-      </div>
-      {DATA_POINTS.map((dp) => (
-        <div key={dp.label} className="data-panel px-3 py-2 flex items-center justify-between gap-5 min-w-[130px]">
-          <span className="text-[9px] text-white/35 tracking-widest uppercase font-medium">{dp.label}</span>
-          <span className="text-sm font-mono font-bold tabular-nums" style={{ color: dp.color }}>
-            {dp.value}
-            {dp.unit && <span className="text-[9px] opacity-50 ml-0.5">{dp.unit}</span>}
-          </span>
-        </div>
-      ))}
-    </motion.aside>
-  );
-}
-
-// ─── Scan Beam ────────────────────────────────────────────────────────────────
-
-function ScanBeam({ opacity }: { opacity: number }) {
-  return (
-    <motion.div
-      animate={{ opacity }}
-      className="absolute inset-0 pointer-events-none z-[5] overflow-hidden"
-      aria-hidden="true"
-    >
-      <motion.div
-        animate={{ x: [0, 60, 0] }}
-        transition={{ duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
-        className="absolute top-0 bottom-0 w-px"
-        style={{
-          left: "18%",
-          background: "linear-gradient(to bottom, transparent 0%, #00e5ff 25%, #00e5ff 75%, transparent 100%)",
-          boxShadow: "0 0 16px 3px rgba(0,229,255,0.35)",
-        }}
-      />
-      <motion.div
-        animate={{ opacity: [0.1, 0.3, 0.1], scaleX: [0.8, 1.3, 0.8] }}
-        transition={{ duration: 2.5, repeat: Infinity }}
-        className="absolute w-1/3 h-px"
-        style={{
-          top: "38%", left: 0,
-          background: "linear-gradient(to right, transparent, #00e5ff 40%, transparent)",
-          transformOrigin: "left",
-        }}
-      />
-    </motion.div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-
 export default function ScrollySequence() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const imagesRef    = useRef<HTMLImageElement[]>([]);
-  const currentFrameRef = useRef(0);
-  const rafRef       = useRef<number | null>(null);
+  const containerRef = useRef<HTMLElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const framesRef = useRef<HTMLImageElement[]>([]);
+  const frameRef = useRef(0);
 
-  const [loadProgress, setLoadProgress] = useState(0);
-  const [isLoaded, setIsLoaded]         = useState(false);
-  const [liveText, setLiveText]         = useState("");
-  const [currentBeatId, setCurrentBeatId] = useState("");
-  const [scrollVal, setScrollVal]       = useState(0);
-  const [scanOpacity, setScanOpacity]   = useState(1);
-  const [holoOpacity, setHoloOpacity]   = useState(0);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [liveText, setLiveText] = useState("");
+  const [activeBeatId, setActiveBeatId] = useState(STORY_BEATS[0].id);
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
-  // ── Framer Motion scroll ─────────────────────────────────────────────────
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start start", "end end"],
   });
 
   const smoothProgress = useSpring(scrollYProgress, {
-    stiffness: 100,
-    damping: 30,
-    restDelta: 0.001,
+    stiffness: 120,
+    damping: 28,
+    mass: 0.45,
   });
 
-  const frameIndex = useTransform(smoothProgress, [0, 1], [0, TOTAL_FRAMES - 1]);
-  const scanBeamOpacity  = useTransform(smoothProgress, [0, 0.2, 0.3], [1, 1, 0]);
-  const holoPanelOpacity = useTransform(smoothProgress, [0.45, 0.55, 0.92, 1], [0, 1, 1, 0]);
+  const activeBeat = useMemo(
+    () => STORY_BEATS.find((beat) => beat.id === activeBeatId) ?? STORY_BEATS[0],
+    [activeBeatId],
+  );
 
-  // ── Image preloading ─────────────────────────────────────────────────────
-  const preloadImages = useCallback(async () => {
-    let loaded = 0;
-    const images: HTMLImageElement[] = new Array(TOTAL_FRAMES);
-
-    await Promise.all(
-      Array.from({ length: TOTAL_FRAMES }, (_, i) =>
-        new Promise<void>((resolve) => {
-          const img = new Image();
-          img.onload = img.onerror = () => {
-            loaded++;
-            setLoadProgress(Math.round((loaded / TOTAL_FRAMES) * 100));
-            images[i] = img;
-            resolve();
-          };
-          img.src = getFramePath(i + 1);
-        })
-      )
-    );
-
-    imagesRef.current = images;
-    setIsLoaded(true);
-  }, []);
-
-  useEffect(() => { preloadImages(); }, [preloadImages]);
-
-  // ── Canvas draw ──────────────────────────────────────────────────────────
-  const drawFrame = useCallback((index: number) => {
+  const drawFrame = useCallback((frameIndex: number) => {
     const canvas = canvasRef.current;
-    const img    = imagesRef.current[index];
-    if (!canvas || !img?.complete || img.naturalWidth === 0) return;
+    const image = framesRef.current[frameIndex];
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const cw  = canvas.clientWidth;
-    const ch  = canvas.clientHeight;
-
-    if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
-      canvas.width  = cw * dpr;
-      canvas.height = ch * dpr;
-      ctx.scale(dpr, dpr);
+    if (!canvas || !image?.complete || image.naturalWidth === 0) {
+      return;
     }
 
-    ctx.clearRect(0, 0, cw, ch);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
 
-    // object-fit: cover — fills viewport, arm stays prominent
-    const scale = Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
-    const dw = img.naturalWidth  * scale;
-    const dh = img.naturalHeight * scale;
-    ctx.drawImage(img, (cw - dw) / 2, 0, dw, dh);
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const targetWidth = Math.floor(cssWidth * devicePixelRatio);
+    const targetHeight = Math.floor(cssHeight * devicePixelRatio);
+
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    }
+
+    drawCoverImage(context, image, cssWidth, cssHeight);
   }, []);
 
-  // ── RAF driven by frameIndex spring ─────────────────────────────────────
   useEffect(() => {
-    if (!isLoaded) return;
+    let isCancelled = false;
+    let loadedCount = 0;
 
-    const u1 = frameIndex.on("change", (v) => {
-      const idx = Math.round(Math.max(0, Math.min(v, TOTAL_FRAMES - 1)));
-      if (idx === currentFrameRef.current) return;
-      currentFrameRef.current = idx;
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => drawFrame(idx));
-    });
+    const preloadFrames = async () => {
+      const images = await Promise.all(
+        Array.from({ length: TOTAL_FRAMES }, (_, index) => {
+          return new Promise<HTMLImageElement>((resolve) => {
+            const image = new Image();
 
-    drawFrame(0);
-    return () => { u1(); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isLoaded, frameIndex, drawFrame]);
+            const handleSettled = () => {
+              loadedCount += 1;
+              if (!isCancelled) {
+                setLoadingProgress(Math.round((loadedCount / TOTAL_FRAMES) * 100));
+              }
+              resolve(image);
+            };
 
-  // ── Subscribe to derived motion values ──────────────────────────────────
-  useEffect(() => {
-    const u1 = smoothProgress.on("change", setScrollVal);
-    const u2 = scanBeamOpacity.on("change", setScanOpacity);
-    const u3 = holoPanelOpacity.on("change", setHoloOpacity);
-    return () => { u1(); u2(); u3(); };
-  }, [smoothProgress, scanBeamOpacity, holoPanelOpacity]);
+            image.onload = handleSettled;
+            image.onerror = () => {
+              image.onerror = handleSettled;
+              image.src = getFallbackFramePath(index + 1);
+            };
+            image.src = getFramePath(index + 1);
+          });
+        }),
+      );
 
-  // ── Screen-reader beat announcements ────────────────────────────────────
-  useEffect(() => {
-    if (!isLoaded) return;
-    for (const beat of BEATS) {
-      if (scrollVal >= beat.range[0] && scrollVal <= beat.range[1]) {
-        if (currentBeatId !== beat.id) {
-          setCurrentBeatId(beat.id);
-          setLiveText(beat.announcement);
-        }
+      if (isCancelled) {
         return;
       }
-    }
-  }, [scrollVal, isLoaded, currentBeatId]);
 
-  // ── Canvas resize ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!isLoaded) return;
-    const onResize = () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => drawFrame(currentFrameRef.current));
+      framesRef.current = images;
+      setIsLoaded(true);
+      setLiveText(STORY_BEATS[0].label);
+      drawFrame(0);
     };
-    window.addEventListener("resize", onResize, { passive: true });
-    return () => window.removeEventListener("resize", onResize);
-  }, [isLoaded, drawFrame]);
 
-  // ─────────────────────────────────────────────────────────────────────────
+    void preloadFrames();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [drawFrame]);
+
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
+    }
+
+    const handleResize = () => {
+      drawFrame(frameRef.current);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [drawFrame, isLoaded]);
+
+  useMotionValueEvent(smoothProgress, "change", (latest) => {
+    if (!isLoaded) {
+      return;
+    }
+
+    const progress = Math.min(Math.max(latest, 0), 1);
+    const nextFrame = Math.min(TOTAL_FRAMES - 1, Math.round(progress * (TOTAL_FRAMES - 1)));
+
+    if (nextFrame !== frameRef.current) {
+      frameRef.current = nextFrame;
+      drawFrame(nextFrame);
+    }
+
+    const beat = getBeatFromProgress(progress);
+    if (beat.id !== activeBeatId) {
+      setActiveBeatId(beat.id);
+      setLiveText(beat.label);
+    }
+  });
 
   return (
-    <>
-      <AnimatePresence>
-        {!isLoaded && (
-          <motion.div key="loader" exit={{ opacity: 0 }} transition={{ duration: 0.7 }}>
-            <LoadingScreen progress={loadProgress} />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* 400vh scroll container */}
+    <section
+      ref={containerRef}
+      aria-label="LogicBite scrollytelling experience"
+      className="relative h-[400vh] bg-black"
+    >
       <div
-        ref={containerRef}
-        style={{ height: "400vh" }}
-        className="relative"
-        aria-label="LogicBite scrollytelling experience"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="sr-live-region"
+        className="sr-only"
       >
-        {/* Sticky viewport */}
-        <div className="sticky top-0 h-screen w-full overflow-hidden bg-black">
-
-          {/* Canvas */}
-          <canvas
-            ref={canvasRef}
-            role="img"
-            aria-label="Animated robotic scanner arm performing AI food nutritional analysis"
-            className="absolute inset-0 w-full h-full"
-            data-testid="logic-bite-canvas"
-          />
-
-          {/* Screen-reader live region */}
-          <div
-            aria-live="polite"
-            aria-atomic="true"
-            className="sr-only"
-            data-testid="sr-live-region"
-          >
-            {liveText}
-          </div>
-
-          {/* Overlays */}
-          <ScanBeam opacity={scanOpacity} />
-          <HoloPanels opacity={holoOpacity} />
-
-          {/* Beat text overlays */}
-          {BEATS.map((beat) => (
-            <BeatOverlay key={beat.id} beat={beat} scrollProgress={scrollVal} />
-          ))}
-
-          {/* HUD corners */}
-          <div aria-hidden="true" className="absolute bottom-8 left-6 flex flex-col gap-1 opacity-25 pointer-events-none">
-            <span className="text-[8px] font-mono tracking-[0.3em] text-cyan-400 uppercase">Sys · Online</span>
-            <span className="text-[8px] font-mono tracking-[0.3em] text-white/40 uppercase">NPU 94% Util</span>
-          </div>
-          <div aria-hidden="true" className="absolute bottom-8 right-6 flex flex-col items-end gap-1 opacity-25 pointer-events-none">
-            <span className="text-[8px] font-mono tracking-[0.3em] text-cyan-400 uppercase">Gemini 1.5 Pro</span>
-            <span className="text-[8px] font-mono tracking-[0.3em] text-white/40 tabular-nums">Conf 94.2%</span>
-          </div>
-
-          {/* Scroll indicator */}
-          <motion.div
-            animate={{ opacity: scrollVal > 0.04 ? 0 : 1 }}
-            className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none"
-            aria-hidden="true"
-          >
-            <span className="text-[8px] tracking-[0.4em] text-white/20 uppercase">Scroll</span>
-            <motion.div
-              animate={{ y: [0, 8, 0] }}
-              transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
-              className="w-px h-8"
-              style={{ background: "linear-gradient(to bottom, rgba(0,229,255,0.4), transparent)" }}
-            />
-          </motion.div>
-        </div>
+        {liveText}
       </div>
-    </>
+
+      <div className="sticky top-0 h-screen overflow-hidden">
+        {!isLoaded ? (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black">
+            <div className="w-full max-w-sm px-6 text-center">
+              <p className="text-[0.72rem] uppercase tracking-[0.4em] text-cyan-300/70">
+                Loading Sequence
+              </p>
+              <div
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={loadingProgress}
+                className="mt-6 h-1 overflow-hidden rounded-full bg-white/10"
+              >
+                <div
+                  className="h-full bg-cyan-300 transition-[width] duration-200"
+                  style={{ width: `${loadingProgress}%` }}
+                />
+              </div>
+              <p className="mt-3 text-sm text-white/55">{loadingProgress}%</p>
+            </div>
+          </div>
+        ) : null}
+
+        <canvas
+          ref={canvasRef}
+          data-testid="logic-bite-canvas"
+          role="img"
+          aria-label="Animated robotic scanner arm deconstructing a meal for the LogicBite story sequence"
+          className="h-full w-full"
+        />
+
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(45,212,191,0.18),transparent_32%),linear-gradient(180deg,rgba(0,0,0,0.05),rgba(0,0,0,0.75))]"
+        />
+
+        <motion.div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 left-[18%] w-px bg-gradient-to-b from-transparent via-cyan-300 to-transparent"
+          animate={{ opacity: [0.2, 0.9, 0.2], x: [0, 16, 0] }}
+          transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+        />
+
+        {renderBeatOverlay({
+          title: activeBeat.title,
+          body: activeBeat.body,
+          align: activeBeat.align,
+        })}
+      </div>
+    </section>
   );
 }
