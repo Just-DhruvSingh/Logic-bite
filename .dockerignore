@@ -15,4 +15,5 @@ README.md
 walkthrough.md
 vitest.config.ts
 vitest.setup.ts
+gha-creds-*.json
 components/__tests__

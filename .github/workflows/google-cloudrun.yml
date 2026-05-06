@@ -2,46 +2,75 @@ name: Build and Deploy to Cloud Run
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: virtual-ellipse-495506-p4
   REGION: us-central1
   SERVICE: logicbite
+  IMAGE: us-central1-docker.pkg.dev/virtual-ellipse-495506-p4/cloud-run-source-deploy/logicbite:${{ github.sha }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Google Auth
+      - name: Google Auth via Workload Identity Federation
         id: auth
-        uses: 'google-github-actions/auth@v2'
+        if: ${{ secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@v3
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - name: Google Auth via Service Account Key
+        id: auth-json
+        if: ${{ !(secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '') && secrets.GCP_SA_KEY != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          create_credentials_file: true
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify Google Auth Configuration
+        if: ${{ secrets.GCP_WIF_PROVIDER == '' && secrets.GCP_SERVICE_ACCOUNT == '' && secrets.GCP_SA_KEY == '' }}
+        run: |
+          echo "Missing Google Cloud authentication secrets."
+          echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT, or set GCP_SA_KEY."
+          exit 1
 
       - name: Authorize Docker
         run: |
-          gcloud auth configure-docker us-central1-docker.pkg.dev
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build and Push Container
-        run: |-
-          docker build -t "us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/cloud-run-source-deploy/${{ env.SERVICE }}:${{ github.sha }}" .
-          docker push "us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/cloud-run-source-deploy/${{ env.SERVICE }}:${{ github.sha }}"
+        run: |
+          docker build -t "${{ env.IMAGE }}" .
+          docker push "${{ env.IMAGE }}"
 
       - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
         with:
           service: ${{ env.SERVICE }}
+          project_id: ${{ env.PROJECT_ID }}
           region: ${{ env.REGION }}
-          image: "us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/cloud-run-source-deploy/${{ env.SERVICE }}:${{ github.sha }}"
+          image: ${{ env.IMAGE }}
           flags: '--allow-unauthenticated'
+
+      - name: Show Service URL
+        run: echo "Deployed to ${{ steps.deploy.outputs.url }}"
