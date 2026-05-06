@@ -17,32 +17,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Google Auth via Workload Identity Federation
-        id: auth
-        if: ${{ env.GCP_WIF_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
           project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
-          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
-          create_credentials_file: true
-
-      - name: Google Auth via Service Account Key
-        id: auth-json
-        if: ${{ !(env.GCP_WIF_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '') && env.GCP_SA_KEY != '' }}
-        uses: google-github-actions/auth@v3
-        with:
-          project_id: ${{ env.PROJECT_ID }}
-          credentials_json: ${{ env.GCP_SA_KEY }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
           create_credentials_file: true
 
       - name: Set up Cloud SDK
@@ -50,16 +34,8 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Verify Google Auth Configuration
-        if: ${{ env.GCP_WIF_PROVIDER == '' && env.GCP_SERVICE_ACCOUNT == '' && env.GCP_SA_KEY == '' }}
-        run: |
-          echo "Missing Google Cloud authentication secrets."
-          echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT, or set GCP_SA_KEY."
-          exit 1
-
-      - name: Authorize Docker
-        run: |
-          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build and Push Container
         run: |
@@ -74,7 +50,7 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
           region: ${{ env.REGION }}
           image: ${{ env.IMAGE }}
-          flags: '--allow-unauthenticated'
+          flags: --allow-unauthenticated
 
       - name: Show Service URL
         run: echo "Deployed to ${{ steps.deploy.outputs.url }}"
